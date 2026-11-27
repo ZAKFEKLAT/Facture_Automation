@@ -20,11 +20,18 @@ Public Sub ActualiserGroupesFactures()
     Dim oldGroups As Object
     Dim comboOrder As Collection
     Dim comboData As Object
-    Dim comboCounts As Object
+    Dim comboMsnCounts As Object
+    Dim seenMsnByCombo As Object
+    Dim rowNumber As Long
+    Dim lastRow As Long
     Dim item As Variant
     Dim comboKey As String
+    Dim msnKey As String
     Dim program As String
     Dim sourceLot As String
+    Dim msn As String
+    Dim vu As String
+    Dim code As String
     Dim invoiceGroup As String
     Dim mapRow As Long
     Dim btn As Button
@@ -49,20 +56,37 @@ Public Sub ActualiserGroupesFactures()
     Set comboOrder = New Collection
     Set comboData = CreateObject("Scripting.Dictionary")
     comboData.CompareMode = vbTextCompare
-    Set comboCounts = CreateObject("Scripting.Dictionary")
-    comboCounts.CompareMode = vbTextCompare
+    Set comboMsnCounts = CreateObject("Scripting.Dictionary")
+    comboMsnCounts.CompareMode = vbTextCompare
+    Set seenMsnByCombo = CreateObject("Scripting.Dictionary")
+    seenMsnByCombo.CompareMode = vbTextCompare
 
-    For Each item In TrackingCombinations(wsTracking)
-        program = CStr(item(0))
-        sourceLot = CStr(item(1))
-        comboKey = MappingKey(program, sourceLot)
-        If Not comboCounts.Exists(comboKey) Then
-            comboOrder.Add comboKey
-            comboData.Add comboKey, Array(program, sourceLot)
-            comboCounts.Add comboKey, 0&
+    lastRow = wsTracking.Cells(wsTracking.Rows.Count, 1).End(xlUp).Row
+    For rowNumber = 2 To lastRow
+        program = Trim$(CStr(wsTracking.Cells(rowNumber, 1).Value2))
+        sourceLot = NormalizeInvoiceLot(program, CStr(wsTracking.Cells(rowNumber, 2).Value2))
+        msn = Trim$(CStr(wsTracking.Cells(rowNumber, 3).Value2))
+        vu = Trim$(CStr(wsTracking.Cells(rowNumber, 4).Value2))
+        code = NormalizeCode(wsTracking.Cells(rowNumber, 6).Value2)
+
+        If Len(program) > 0 And Len(sourceLot) > 0 Then
+            comboKey = MappingKey(program, sourceLot)
+            If Not comboMsnCounts.Exists(comboKey) Then
+                comboOrder.Add comboKey
+                comboData.Add comboKey, Array(program, sourceLot)
+                comboMsnCounts.Add comboKey, 0&
+            End If
+
+            ' Count unique valid MSNs matching FillGeneratedInvoice criteria
+            If Len(msn) > 0 And Len(vu) > 0 And Len(code) > 0 Then
+                msnKey = comboKey & ChrW(1) & UCase$(msn)
+                If Not seenMsnByCombo.Exists(msnKey) Then
+                    seenMsnByCombo.Add msnKey, True
+                    comboMsnCounts(comboKey) = CLng(comboMsnCounts(comboKey)) + 1
+                End If
+            End If
         End If
-        comboCounts(comboKey) = CLng(comboCounts(comboKey)) + 1
-    Next item
+    Next rowNumber
 
     Do While ws.Shapes.Count > 0
         ws.Shapes(1).Delete
@@ -77,7 +101,7 @@ Public Sub ActualiserGroupesFactures()
         "Set the same 'Invoice Group' name for LOTs of the same Program to invoice them together, then click 'Refresh Groups'."
     ws.Range("A2:D2").Merge
     ws.Range("A2").WrapText = True
-    ws.Range("A4:D4").Value = Array("Program", "LOT", "Rows", "Invoice Group")
+    ws.Range("A4:D4").Value = Array("Program", "LOT", "MSNs", "Invoice Group")
     StyleHeader ws.Range("A4:D4")
 
     ' Right table: Final invoices ready to generate
@@ -85,7 +109,7 @@ Public Sub ActualiserGroupesFactures()
     ws.Range("F1").Font.Bold = True
     ws.Range("F1").Font.Size = 12
     ws.Range("F4:K4").Value = _
-        Array("Program", "Invoice Group", "Included LOTs", "Rows", "Action", "Generated File")
+        Array("Program", "Invoice Group", "Included LOTs", "MSNs", "Action", "Generated File")
     StyleHeader ws.Range("F4:K4")
 
     Set btn = ws.Buttons.Add(ws.Range("F2").Left, ws.Range("F2").Top + 2, 125, 24)
@@ -109,7 +133,7 @@ Public Sub ActualiserGroupesFactures()
         End If
         ws.Cells(mapRow, 1).Value = program
         ws.Cells(mapRow, 2).Value = sourceLot
-        ws.Cells(mapRow, 3).Value = comboCounts(comboKey)
+        ws.Cells(mapRow, 3).Value = comboMsnCounts(comboKey)
         ws.Cells(mapRow, 4).Value = invoiceGroup
         ws.Cells(mapRow, 4).Interior.Color = RGB(255, 251, 230)
         ws.Cells(mapRow, 4).Borders.LineStyle = xlContinuous
@@ -290,30 +314,6 @@ Private Function CountGroupRows(ByVal wsControl As Worksheet, _
     Next rowNumber
 End Function
 
-Private Function TrackingCombinations(ByVal ws As Worksheet) As Collection
-    Dim result As New Collection
-    Dim seen As Object
-    Dim rowNumber As Long
-    Dim program As String
-    Dim lot As String
-    Dim key As String
-
-    Set seen = CreateObject("Scripting.Dictionary")
-    seen.CompareMode = vbTextCompare
-    For rowNumber = 2 To ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
-        program = Trim$(CStr(ws.Cells(rowNumber, 1).Value2))
-        lot = NormalizeInvoiceLot(program, CStr(ws.Cells(rowNumber, 2).Value2))
-        If Len(program) > 0 And Len(lot) > 0 Then
-            key = MappingKey(program, lot)
-            If Not seen.Exists(key) Then
-                seen.Add key, True
-                result.Add Array(program, lot)
-            End If
-        End If
-    Next rowNumber
-    Set TrackingCombinations = result
-End Function
-
 Private Function ReadExistingGroups(ByVal ws As Worksheet) As Object
     Dim groups As Object
     Dim rowNumber As Long
@@ -367,6 +367,14 @@ Private Function NormalizeInvoiceLot(ByVal program As String, _
         End If
     End If
     NormalizeInvoiceLot = lot
+End Function
+
+Private Function NormalizeCode(ByVal value As Variant) As String
+    Dim code As String
+
+    If IsError(value) Or IsEmpty(value) Then Exit Function
+    code = UCase$(Trim$(Replace(CStr(value), ChrW(160), " ")))
+    If Left$(code, 2) = "IS" Then NormalizeCode = code
 End Function
 
 Private Function MappingKey(ByVal program As String, ByVal lot As String) As String
