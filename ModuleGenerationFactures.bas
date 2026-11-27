@@ -9,6 +9,7 @@ Private Const TRACKING_FILE_PATTERN As String = "TRACKING EXPORT*.xlsx"
 Private Const PRICE_FILE_PATTERN As String = "prix*.xlsx"
 Private Const OUTPUT_FOLDER As String = "Factures Generated"
 Private Const INVOICE_NUMBER_PREFIX As String = "LAT21"
+Private Const FINAL_FIRST_ROW As Long = 8
 
 Public Sub GenererUneFacture(ByVal program As String, _
                              ByVal invoiceGroup As String, _
@@ -129,6 +130,8 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     Dim inputRow As Long
     Dim summaryRow As Long
     Dim finalRow As Long
+    Dim templateLastRow As Long
+    Dim activeLastRow As Long
     Dim msn As String
     Dim vu As String
     Dim msnLot As String
@@ -170,7 +173,8 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     Set msnOrder = New Collection
 
     LoadPrices wsSource, prices
-    ClearInvoiceData wsInput, wsFinal
+    templateLastRow = DetectFinalTableLastRow(wsFinal)
+    ClearInvoiceData wsInput, wsFinal, templateLastRow
 
     inputRow = 2
     For Each item In GetMatchingRows(wsTracking, program, targetLots)
@@ -217,8 +221,11 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
         End If
     Next item
 
+    ' Expand or shrink Facture finale table dynamically to match msnOrder.Count
+    activeLastRow = AdjustFinalTableRows(wsFinal, templateLastRow, msnOrder.Count)
+
     summaryRow = 2
-    finalRow = 8
+    finalRow = FINAL_FIRST_ROW
     For Each item In msnOrder
         SetCell wsInput.Cells(summaryRow, 5), _
                 BuildReference(program, CStr(lotByMsn(CStr(item))), vusByMsn(CStr(item))), False
@@ -236,6 +243,11 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
         finalRow = finalRow + 1
     Next item
 
+    ' Hide any leftover unused template rows so short invoices stay clean
+    If finalRow <= activeLastRow Then
+        wsFinal.Rows(finalRow & ":" & activeLastRow).Hidden = True
+    End If
+
     ClearRangeSafe wsInput.Range("I:OI")
     wsInput.Range("I:OI").ClearContents
     SetCell wsFinal.Cells(4, 3), coisage, False
@@ -243,6 +255,95 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
             "N° Facture : " & BuildInvoiceNumber(coisage, wsFinal.Cells(4, 14).Value), _
             False
 End Sub
+
+' Detects the last data row in Facture finale before the Total/Footer block
+Private Function DetectFinalTableLastRow(ByVal wsFinal As Worksheet) As Long
+    Dim r As Long
+    Dim maxScan As Long
+    Dim rowText As String
+    Dim colMFormula As String
+    Dim colBText As String
+
+    maxScan = wsFinal.UsedRange.Row + wsFinal.UsedRange.Rows.Count + 5
+    If maxScan < FINAL_FIRST_ROW + 1 Then maxScan = FINAL_FIRST_ROW + 30
+
+    For r = FINAL_FIRST_ROW To maxScan
+        colMFormula = UCase$(Trim$(CStr(wsFinal.Cells(r, 13).Formula)))
+        colBText = UCase$(Trim$(CStr(wsFinal.Cells(r, 2).Value2)))
+        rowText = UCase$(Trim$(CStr(wsFinal.Cells(r, 10).Value2) & " " & _
+                               CStr(wsFinal.Cells(r, 11).Value2) & " " & _
+                               CStr(wsFinal.Cells(r, 12).Value2)))
+
+        ' Stop right before the Total row (e.g., =SUM(...) in M, or "TOTAL" label)
+        If Left$(colMFormula, 5) = "=SUM(" Or Left$(colMFormula, 7) = "=SOMME(" Or _
+           InStr(1, rowText, "TOTAL", vbTextCompare) > 0 Or _
+           InStr(1, colBText, "TOTAL", vbTextCompare) > 0 Then
+            DetectFinalTableLastRow = r - 1
+            Exit Function
+        End If
+    Next r
+
+    ' Fallback if no explicit Total label is found
+    DetectFinalTableLastRow = Application.WorksheetFunction.Max( _
+        FINAL_FIRST_ROW, _
+        wsFinal.Cells(wsFinal.Rows.Count, 2).End(xlUp).Row, _
+        wsFinal.Cells(wsFinal.Rows.Count, 9).End(xlUp).Row, _
+        wsFinal.Cells(wsFinal.Rows.Count, 12).End(xlUp).Row)
+End Function
+
+' Inserts formatted rows when neededCount exceeds template capacity, and updates SUM formulas below
+Private Function AdjustFinalTableRows(ByVal wsFinal As Worksheet, _
+                                      ByVal templateLastRow As Long, _
+                                      ByVal neededCount As Long) As Long
+    Dim capacity As Long
+    Dim extraRows As Long
+    Dim insertAt As Long
+    Dim newLastRow As Long
+    Dim footerRow As Long
+    Dim col As Long
+    Dim fText As String
+
+    If templateLastRow < FINAL_FIRST_ROW Then templateLastRow = FINAL_FIRST_ROW
+    wsFinal.Rows(FINAL_FIRST_ROW & ":" & templateLastRow).Hidden = False
+
+    capacity = templateLastRow - FINAL_FIRST_ROW + 1
+    If neededCount <= capacity Then
+        AdjustFinalTableRows = templateLastRow
+        Exit Function
+    End If
+
+    extraRows = neededCount - capacity
+    insertAt = templateLastRow + 1
+    newLastRow = templateLastRow + extraRows
+
+    ' Insert rows right after the last template data row so footer shifts down intact
+    wsFinal.Rows(insertAt).Resize(extraRows).Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+
+    ' Copy formatting, merged-cell layout, and row height from templateLastRow to all inserted rows
+    wsFinal.Rows(templateLastRow).Copy
+    wsFinal.Rows(insertAt & ":" & newLastRow).PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+    wsFinal.Rows(insertAt & ":" & newLastRow).RowHeight = wsFinal.Rows(templateLastRow).RowHeight
+    ClearRangeSafe wsFinal.Range("B" & insertAt & ":B" & newLastRow)
+    ClearRangeSafe wsFinal.Range("I" & insertAt & ":J" & newLastRow)
+    ClearRangeSafe wsFinal.Range("L" & insertAt & ":M" & newLastRow)
+
+    ' Ensure any SUM/SOMME formulas in the footer immediately below include the newly inserted rows
+    For footerRow = newLastRow + 1 To newLastRow + 10
+        For col = 1 To 15
+            fText = CStr(wsFinal.Cells(footerRow, col).Formula)
+            If Left$(fText, 1) = "=" Then
+                fText = Replace(fText, ":" & "L" & templateLastRow & ")", ":" & "L" & newLastRow & ")", 1, -1, vbTextCompare)
+                fText = Replace(fText, ":" & "M" & templateLastRow & ")", ":" & "M" & newLastRow & ")", 1, -1, vbTextCompare)
+                fText = Replace(fText, ":$L$" & templateLastRow & ")", ":$L$" & newLastRow & ")", 1, -1, vbTextCompare)
+                fText = Replace(fText, ":$M$" & templateLastRow & ")", ":$M$" & newLastRow & ")", 1, -1, vbTextCompare)
+                wsFinal.Cells(footerRow, col).Formula = fText
+            End If
+        Next col
+    Next footerRow
+
+    AdjustFinalTableRows = newLastRow
+End Function
 
 Private Function GetMatchingRows(ByVal ws As Worksheet, _
                                  ByVal program As String, _
@@ -285,23 +386,21 @@ Private Function NormalizeInvoiceLot(ByVal program As String, _
     NormalizeInvoiceLot = lot
 End Function
 
-Private Sub ClearInvoiceData(ByVal wsInput As Worksheet, ByVal wsFinal As Worksheet)
-    Dim lastRow As Long
+Private Sub ClearInvoiceData(ByVal wsInput As Worksheet, _
+                             ByVal wsFinal As Worksheet, _
+                             ByVal templateLastRow As Long)
     Dim lastInputRow As Long
 
     lastInputRow = wsInput.UsedRange.Row + wsInput.UsedRange.Rows.Count - 1
     If lastInputRow < 2 Then lastInputRow = 2
     ClearRangeSafe wsInput.Range("A2:G" & lastInputRow)
 
-    lastRow = Application.WorksheetFunction.Max( _
-        8, _
-        wsFinal.Cells(wsFinal.Rows.Count, 2).End(xlUp).Row, _
-        wsFinal.Cells(wsFinal.Rows.Count, 9).End(xlUp).Row, _
-        wsFinal.Cells(wsFinal.Rows.Count, 12).End(xlUp).Row)
-    ClearRangeSafe wsFinal.Range("B8:B" & lastRow)
-    ClearRangeSafe wsFinal.Range("I8:I" & lastRow)
-    ClearRangeSafe wsFinal.Range("J8:J" & lastRow)
-    ClearRangeSafe wsFinal.Range("L8:M" & lastRow)
+    If templateLastRow < FINAL_FIRST_ROW Then templateLastRow = FINAL_FIRST_ROW
+    wsFinal.Rows(FINAL_FIRST_ROW & ":" & templateLastRow).Hidden = False
+    ClearRangeSafe wsFinal.Range("B" & FINAL_FIRST_ROW & ":B" & templateLastRow)
+    ClearRangeSafe wsFinal.Range("I" & FINAL_FIRST_ROW & ":I" & templateLastRow)
+    ClearRangeSafe wsFinal.Range("J" & FINAL_FIRST_ROW & ":J" & templateLastRow)
+    ClearRangeSafe wsFinal.Range("L" & FINAL_FIRST_ROW & ":M" & templateLastRow)
 End Sub
 
 Private Sub LoadPrices(ByVal ws As Worksheet, ByVal prices As Object)
