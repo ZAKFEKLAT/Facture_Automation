@@ -204,6 +204,7 @@ Private Sub BuildInvoiceGroups(ByVal ws As Worksheet)
     Dim program As String
     Dim invoiceGroup As String
     Dim groupKey As String
+    Dim groupEntry As Variant
     Dim btn As Button
 
     Set groups = New Collection
@@ -223,9 +224,9 @@ Private Sub BuildInvoiceGroups(ByVal ws As Worksheet)
     Next rowNumber
 
     outputRow = GROUP_FIRST_ROW
-    For Each groupKey In groups
-        program = CStr(groupKey(0))
-        invoiceGroup = CStr(groupKey(1))
+    For Each groupEntry In groups
+        program = CStr(groupEntry(0))
+        invoiceGroup = CStr(groupEntry(1))
         ws.Cells(outputRow, 6).Value = program
         ws.Cells(outputRow, 7).Value = invoiceGroup
         ws.Cells(outputRow, 8).Value = IncludedLots(ws, program, invoiceGroup)
@@ -235,7 +236,7 @@ Private Sub BuildInvoiceGroups(ByVal ws As Worksheet)
         btn.Caption = "Generate"
         btn.OnAction = "GenererFactureDepuisLigne"
         outputRow = outputRow + 1
-    Next groupKey
+    Next groupEntry
 End Sub
 
 Private Function GetLotsForGroup(ByVal ws As Worksheet, ByVal program As String, _
