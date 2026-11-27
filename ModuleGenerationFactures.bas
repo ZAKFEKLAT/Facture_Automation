@@ -122,6 +122,7 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     Dim prices As Object
     Dim totals As Object
     Dim vusByMsn As Object
+    Dim lotByMsn As Object
     Dim occurrences As Object
     Dim msnOrder As Collection
     Dim vus As Collection
@@ -130,6 +131,7 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     Dim finalRow As Long
     Dim msn As String
     Dim vu As String
+    Dim msnLot As String
     Dim code As String
     Dim price As Double
     Dim foundPrice As Boolean
@@ -157,6 +159,8 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     totals.CompareMode = vbTextCompare
     Set vusByMsn = CreateObject("Scripting.Dictionary")
     vusByMsn.CompareMode = vbTextCompare
+    Set lotByMsn = CreateObject("Scripting.Dictionary")
+    lotByMsn.CompareMode = vbTextCompare
     Set occurrences = CreateObject("Scripting.Dictionary")
     occurrences.CompareMode = vbTextCompare
     Set lotCompleteByMsn = CreateObject("Scripting.Dictionary")
@@ -170,6 +174,7 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
 
     inputRow = 2
     For Each item In GetMatchingRows(wsTracking, program, targetLots)
+        msnLot = NormalizeInvoiceLot(program, CStr(wsTracking.Cells(CLng(item), 2).Value2))
         msn = Trim$(CStr(wsTracking.Cells(CLng(item), 3).Value2))
         vu = Trim$(CStr(wsTracking.Cells(CLng(item), 4).Value2))
         code = NormalizeCode(wsTracking.Cells(CLng(item), 6).Value2)
@@ -178,6 +183,7 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
                 totals.Add msn, 0#
                 occurrences.Add msn, 0
                 lotCompleteByMsn.Add msn, False
+                lotByMsn.Add msn, msnLot
                 Set vus = New Collection
                 vusByMsn.Add msn, vus
                 Set articleCodes = New Collection
@@ -215,7 +221,7 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     finalRow = 8
     For Each item In msnOrder
         SetCell wsInput.Cells(summaryRow, 5), _
-                BuildReference(program, invoiceGroup, vusByMsn(CStr(item))), False
+                BuildReference(program, CStr(lotByMsn(CStr(item))), vusByMsn(CStr(item))), False
         SetCell wsInput.Cells(summaryRow, 6), CStr(item), False
         SetCell wsInput.Cells(summaryRow, 7), Abs(CDbl(totals(CStr(item)))), False
 
