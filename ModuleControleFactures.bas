@@ -16,6 +16,7 @@ Public Sub ActualiserGroupesFactures()
     Dim tracking As Workbook
     Dim wsTracking As Worksheet
     Dim trackingPath As String
+    Dim wasAlreadyOpen As Boolean
     Dim oldGroups As Object
     Dim comboOrder As Collection
     Dim comboData As Object
@@ -26,9 +27,9 @@ Public Sub ActualiserGroupesFactures()
     Dim sourceLot As String
     Dim invoiceGroup As String
     Dim mapRow As Long
-    Dim shp As Shape
     Dim btn As Button
 
+    On Error GoTo CleanFail
     Set facture = ThisWorkbook
     trackingPath = FindWorkbookPath(facture.Path, TRACKING_FILE_PATTERN, facture.Name)
     If Len(trackingPath) = 0 Then
@@ -36,6 +37,7 @@ Public Sub ActualiserGroupesFactures()
             "No file matching '" & TRACKING_FILE_PATTERN & "' found in: " & facture.Path
     End If
 
+    wasAlreadyOpen = IsWorkbookOpen(trackingPath)
     Set tracking = OpenReadOnlyWorkbook(trackingPath)
     Set wsTracking = FindTrackingSheet(tracking)
     If wsTracking Is Nothing Then
@@ -67,25 +69,31 @@ Public Sub ActualiserGroupesFactures()
     Loop
     ws.Cells.Clear
 
-    ws.Range("A1").Value = "Invoice grouping setup"
+    ' Left table: Mapping Tracking LOTs to Invoice Groups
+    ws.Range("A1").Value = "1. Invoice Grouping Setup (Program & LOT Mapping)"
     ws.Range("A1").Font.Bold = True
+    ws.Range("A1").Font.Size = 12
     ws.Range("A2").Value = _
-        "Edit Invoice Group to combine LOTs. Use the same group name for LOTs that belong on one invoice, then click Refresh groups."
-    ws.Range("A2:J2").Merge
+        "To combine LOTs of the same Program into 1 invoice, give them the exact same 'Invoice Group' name in Column D, then click 'Refresh Groups'."
+    ws.Range("A2:D2").Merge
     ws.Range("A2").WrapText = True
     ws.Range("A4:D4").Value = Array("Program", "Tracking LOT", "Rows", "Invoice Group")
-    ws.Range("F1").Value = "Invoice actions"
-    ws.Range("F1").Font.Bold = True
-    ws.Range("F4:J4").Value = _
-        Array("Program", "Invoice Group", "Included LOTs", "Rows", "Generate")
     StyleHeader ws.Range("A4:D4")
-    StyleHeader ws.Range("F4:J4")
 
-    Set btn = ws.Buttons.Add(ws.Range("F2").Left, ws.Range("F2").Top, 115, 24)
-    btn.Caption = "Refresh groups"
+    ' Right table: Ready-to-generate Invoices
+    ws.Range("F1").Value = "2. Invoices to Generate"
+    ws.Range("F1").Font.Bold = True
+    ws.Range("F1").Font.Size = 12
+    ws.Range("F4:K4").Value = _
+        Array("Program", "Invoice Group", "Included LOTs", "Total Rows", "Action", "Status")
+    StyleHeader ws.Range("F4:K4")
+
+    Set btn = ws.Buttons.Add(ws.Range("F2").Left, ws.Range("F2").Top + 2, 125, 24)
+    btn.Caption = "Refresh Groups"
     btn.OnAction = "ActualiserGroupesFactures"
-    Set btn = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top, 150, 24)
-    btn.Caption = "Generate all invoices"
+
+    Set btn = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 2, 165, 24)
+    btn.Caption = "Generate All Invoices"
     btn.OnAction = "GenererToutesLesFactures"
 
     mapRow = MAP_FIRST_ROW
@@ -103,35 +111,63 @@ Public Sub ActualiserGroupesFactures()
         ws.Cells(mapRow, 2).Value = sourceLot
         ws.Cells(mapRow, 3).Value = comboCounts(comboKey)
         ws.Cells(mapRow, 4).Value = invoiceGroup
+        ws.Cells(mapRow, 4).Interior.Color = RGB(255, 251, 230) ' Highlight editable column
+        ws.Cells(mapRow, 4).Borders.LineStyle = xlContinuous
+        ws.Cells(mapRow, 4).Borders.Color = RGB(200, 200, 200)
         mapRow = mapRow + 1
     Next item
 
     BuildInvoiceGroups ws, wsTracking
-    ws.Columns("A:J").AutoFit
-    ws.Columns("B").ColumnWidth = 20
-    ws.Columns("D").ColumnWidth = 24
-    ws.Columns("H").ColumnWidth = 24
-    ws.Columns("I").ColumnWidth = 30
+
+    ws.Columns("A:K").AutoFit
+    ws.Columns("B").ColumnWidth = 18
+    ws.Columns("D").ColumnWidth = 22
+    ws.Columns("G").ColumnWidth = 22
+    ws.Columns("H").ColumnWidth = 28
+    ws.Columns("I").ColumnWidth = 12
+    ws.Columns("J").ColumnWidth = 15
+    ws.Columns("K").ColumnWidth = 24
     ws.Rows(2).RowHeight = 32
     ws.Activate
-    MsgBox "Control sheet refreshed. Edit the Invoice Group column and refresh to change grouping.", _
-           vbInformation, "Invoice control"
+
+    If Not wasAlreadyOpen And Not tracking Is Nothing Then
+        tracking.Close SaveChanges:=False
+    End If
+
+    MsgBox "Control sheet updated. Edit Column D ('Invoice Group') to group LOTs of the same Program, then click 'Refresh Groups'.", _
+           vbInformation, "Invoice Control"
+    Exit Sub
+
+CleanFail:
+    If Not wasAlreadyOpen And Not tracking Is Nothing Then
+        On Error Resume Next
+        tracking.Close SaveChanges:=False
+        On Error GoTo 0
+    End If
+    MsgBox "Error (" & Err.Number & "): " & Err.Description, vbCritical, "Invoice Control"
 End Sub
 
 Public Sub GenererFactureDepuisLigne()
     Dim ws As Worksheet
     Dim rowNumber As Long
+    Dim program As String
+    Dim invoiceGroup As String
+    Dim targetLots As Collection
 
     On Error GoTo Fail
     Set ws = ThisWorkbook.Worksheets(CONTROL_SHEET)
     rowNumber = ws.Shapes(Application.Caller).TopLeftCell.Row
-    GenererUneFacture CStr(ws.Cells(rowNumber, 6).Value), _
-                      CStr(ws.Cells(rowNumber, 7).Value), ThisWorkbook
+    program = Trim$(CStr(ws.Cells(rowNumber, 6).Value))
+    invoiceGroup = Trim$(CStr(ws.Cells(rowNumber, 7).Value))
+    Set targetLots = GetLotsForGroup(ws, program, invoiceGroup)
+
+    GenererUneFacture program, invoiceGroup, targetLots, ThisWorkbook
     ws.Cells(rowNumber, 11).Value = "Generated " & Format(Now, "dd/mm/yyyy hh:nn")
+    ws.Cells(rowNumber, 11).Font.Color = RGB(0, 128, 0)
     Exit Sub
 Fail:
     MsgBox "Invoice generation failed (" & Err.Number & "): " & Err.Description, _
-           vbCritical, "Invoice control"
+           vbCritical, "Invoice Control"
 End Sub
 
 Public Sub GenererToutesLesFactures()
@@ -139,24 +175,29 @@ Public Sub GenererToutesLesFactures()
     Dim lastRow As Long
     Dim rowNumber As Long
     Dim doneCount As Long
+    Dim program As String
+    Dim invoiceGroup As String
+    Dim targetLots As Collection
 
     On Error GoTo Fail
     Set ws = ThisWorkbook.Worksheets(CONTROL_SHEET)
     lastRow = ws.Cells(ws.Rows.Count, 6).End(xlUp).Row
     For rowNumber = GROUP_FIRST_ROW To lastRow
-        If Len(Trim$(CStr(ws.Cells(rowNumber, 6).Value))) > 0 Then
-            GenererUneFacture CStr(ws.Cells(rowNumber, 6).Value), _
-                              CStr(ws.Cells(rowNumber, 7).Value), ThisWorkbook
-            ws.Cells(rowNumber, 11).Value = "Generated " & _
-                                              Format(Now, "dd/mm/yyyy hh:nn")
+        program = Trim$(CStr(ws.Cells(rowNumber, 6).Value))
+        invoiceGroup = Trim$(CStr(ws.Cells(rowNumber, 7).Value))
+        If Len(program) > 0 And Len(invoiceGroup) > 0 Then
+            Set targetLots = GetLotsForGroup(ws, program, invoiceGroup)
+            GenererUneFacture program, invoiceGroup, targetLots, ThisWorkbook
+            ws.Cells(rowNumber, 11).Value = "Generated " & Format(Now, "dd/mm/yyyy hh:nn")
+            ws.Cells(rowNumber, 11).Font.Color = RGB(0, 128, 0)
             doneCount = doneCount + 1
         End If
     Next rowNumber
-    MsgBox doneCount & " invoices generated.", vbInformation, "Invoice control"
+    MsgBox doneCount & " invoice(s) generated in 'Factures Generated'.", vbInformation, "Invoice Control"
     Exit Sub
 Fail:
     MsgBox "Stopped at group row " & rowNumber & " (" & Err.Number & "): " & _
-           Err.Description, vbCritical, "Invoice control"
+           Err.Description, vbCritical, "Invoice Control"
 End Sub
 
 Private Sub BuildInvoiceGroups(ByVal ws As Worksheet, ByVal wsTracking As Worksheet)
@@ -194,17 +235,18 @@ Private Sub BuildInvoiceGroups(ByVal ws As Worksheet, ByVal wsTracking As Worksh
         ws.Cells(outputRow, 6).Value = program
         ws.Cells(outputRow, 7).Value = invoiceGroup
         ws.Cells(outputRow, 8).Value = lots
-        ws.Cells(outputRow, 9).Value = CountGroupRows(wsTracking, ws, program, invoiceGroup)
-        Set btn = ws.Buttons.Add(ws.Cells(outputRow, 10).Left, _
-                                 ws.Cells(outputRow, 10).Top, 95, 20)
+        ws.Cells(outputRow, 9).Value = CountGroupRows(ws, program, invoiceGroup)
+        Set btn = ws.Buttons.Add(ws.Cells(outputRow, 10).Left + 2, _
+                                 ws.Cells(outputRow, 10).Top + 1, 90, 18)
         btn.Caption = "Generate"
         btn.OnAction = "GenererFactureDepuisLigne"
         outputRow = outputRow + 1
     Next groupKey
 End Sub
 
-Private Function IncludedLots(ByVal ws As Worksheet, ByVal program As String, _
-                              ByVal invoiceGroup As String) As String
+Private Function GetLotsForGroup(ByVal ws As Worksheet, ByVal program As String, _
+                                 ByVal invoiceGroup As String) As Collection
+    Dim lots As New Collection
     Dim seen As Object
     Dim rowNumber As Long
     Dim lot As String
@@ -213,33 +255,42 @@ Private Function IncludedLots(ByVal ws As Worksheet, ByVal program As String, _
     Set seen = CreateObject("Scripting.Dictionary")
     seen.CompareMode = vbTextCompare
     For rowNumber = MAP_FIRST_ROW To ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
-        If StrComp(CStr(ws.Cells(rowNumber, 1).Value), program, vbTextCompare) = 0 _
-           And StrComp(CStr(ws.Cells(rowNumber, 4).Value), invoiceGroup, vbTextCompare) = 0 Then
-            lot = CStr(ws.Cells(rowNumber, 2).Value)
+        If StrComp(Trim$(CStr(ws.Cells(rowNumber, 1).Value)), program, vbTextCompare) = 0 _
+           And StrComp(Trim$(CStr(ws.Cells(rowNumber, 4).Value)), invoiceGroup, vbTextCompare) = 0 Then
+            lot = Trim$(CStr(ws.Cells(rowNumber, 2).Value))
             key = UCase$(lot)
-            If Not seen.Exists(key) Then seen.Add key, lot
+            If Len(lot) > 0 And Not seen.Exists(key) Then
+                seen.Add key, lot
+                lots.Add lot
+            End If
         End If
     Next rowNumber
-    IncludedLots = Join(seen.Items, ", ")
+    Set GetLotsForGroup = lots
 End Function
 
-Private Function CountGroupRows(ByVal wsTracking As Worksheet, ByVal wsControl As Worksheet, _
+Private Function IncludedLots(ByVal ws As Worksheet, ByVal program As String, _
+                              ByVal invoiceGroup As String) As String
+    Dim lots As Collection
+    Dim item As Variant
+    Dim result As String
+
+    Set lots = GetLotsForGroup(ws, program, invoiceGroup)
+    For Each item In lots
+        If Len(result) > 0 Then result = result & ", "
+        result = result & CStr(item)
+    Next item
+    IncludedLots = result
+End Function
+
+Private Function CountGroupRows(ByVal wsControl As Worksheet, _
                                 ByVal program As String, _
                                 ByVal invoiceGroup As String) As Long
     Dim rowNumber As Long
-    Dim sourceRow As Long
-    Dim sourceLot As String
 
     For rowNumber = MAP_FIRST_ROW To wsControl.Cells(wsControl.Rows.Count, 1).End(xlUp).Row
-        If StrComp(CStr(wsControl.Cells(rowNumber, 1).Value), program, vbTextCompare) = 0 _
-           And StrComp(CStr(wsControl.Cells(rowNumber, 4).Value), invoiceGroup, vbTextCompare) = 0 Then
-            sourceLot = CStr(wsControl.Cells(rowNumber, 2).Value)
-            For sourceRow = 2 To wsTracking.Cells(wsTracking.Rows.Count, 1).End(xlUp).Row
-                If StrComp(Trim$(CStr(wsTracking.Cells(sourceRow, 1).Value2)), program, vbTextCompare) = 0 _
-                   And StrComp(Trim$(CStr(wsTracking.Cells(sourceRow, 2).Value2)), sourceLot, vbTextCompare) = 0 Then
-                    CountGroupRows = CountGroupRows + 1
-                End If
-            Next sourceRow
+        If StrComp(Trim$(CStr(wsControl.Cells(rowNumber, 1).Value)), program, vbTextCompare) = 0 _
+           And StrComp(Trim$(CStr(wsControl.Cells(rowNumber, 4).Value)), invoiceGroup, vbTextCompare) = 0 Then
+            CountGroupRows = CountGroupRows + CLng(wsControl.Cells(rowNumber, 3).Value)
         End If
     Next rowNumber
 End Function
@@ -256,7 +307,7 @@ Private Function TrackingCombinations(ByVal ws As Worksheet) As Collection
     seen.CompareMode = vbTextCompare
     For rowNumber = 2 To ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
         program = Trim$(CStr(ws.Cells(rowNumber, 1).Value2))
-        lot = Trim$(CStr(ws.Cells(rowNumber, 2).Value2))
+        lot = NormalizeTrackingLot(program, CStr(ws.Cells(rowNumber, 2).Value2))
         If Len(program) > 0 And Len(lot) > 0 Then
             key = MappingKey(program, lot)
             If Not seen.Exists(key) Then
@@ -280,7 +331,7 @@ Private Function ReadExistingGroups(ByVal ws As Worksheet) As Object
     groups.CompareMode = vbTextCompare
     For rowNumber = MAP_FIRST_ROW To ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
         program = Trim$(CStr(ws.Cells(rowNumber, 1).Value))
-        lot = Trim$(CStr(ws.Cells(rowNumber, 2).Value))
+        lot = NormalizeTrackingLot(program, CStr(ws.Cells(rowNumber, 2).Value))
         invoiceGroup = Trim$(CStr(ws.Cells(rowNumber, 4).Value))
         If Len(program) > 0 And Len(lot) > 0 And Len(invoiceGroup) > 0 Then
             key = MappingKey(program, lot)
@@ -290,17 +341,38 @@ Private Function ReadExistingGroups(ByVal ws As Worksheet) As Object
     Set ReadExistingGroups = groups
 End Function
 
+' Business rules for default grouping (including future-proof H160+H175 for AH)
 Private Function DefaultInvoiceGroup(ByVal program As String, _
                                      ByVal sourceLot As String) As String
-    If StrComp(program, "WINGS", vbTextCompare) = 0 Then
+    If StrComp(program, "WINGS", vbTextCompare) = 0 And _
+       (StrComp(sourceLot, "900", vbTextCompare) = 0 Or _
+        StrComp(sourceLot, "1000", vbTextCompare) = 0) Then
         DefaultInvoiceGroup = "900+1000"
     ElseIf StrComp(program, "ATR", vbTextCompare) = 0 And _
            (StrComp(sourceLot, "LOT2", vbTextCompare) = 0 Or _
             StrComp(sourceLot, "LOT3", vbTextCompare) = 0) Then
         DefaultInvoiceGroup = "LOT2+LOT3"
+    ElseIf StrComp(program, "AH", vbTextCompare) = 0 And _
+           (StrComp(sourceLot, "H160", vbTextCompare) = 0 Or _
+            StrComp(sourceLot, "H175", vbTextCompare) = 0) Then
+        DefaultInvoiceGroup = "H160+H175"
     Else
         DefaultInvoiceGroup = sourceLot
     End If
+End Function
+
+Private Function NormalizeTrackingLot(ByVal program As String, _
+                                      ByVal lot As String) As String
+    Dim slashPosition As Long
+
+    lot = Trim$(lot)
+    If StrComp(Trim$(program), "WINGS", vbTextCompare) = 0 Then
+        slashPosition = InStrRev(lot, "/")
+        If slashPosition > 0 Then
+            lot = Trim$(Mid$(lot, slashPosition + 1))
+        End If
+    End If
+    NormalizeTrackingLot = lot
 End Function
 
 Private Function MappingKey(ByVal program As String, ByVal lot As String) As String
@@ -336,6 +408,17 @@ Private Function FindTrackingSheet(ByVal wb As Workbook) As Worksheet
             Exit Function
         End If
     Next ws
+End Function
+
+Private Function IsWorkbookOpen(ByVal fullPath As String) As Boolean
+    Dim wb As Workbook
+
+    For Each wb In Application.Workbooks
+        If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
+            IsWorkbookOpen = True
+            Exit Function
+        End If
+    Next wb
 End Function
 
 Private Function OpenReadOnlyWorkbook(ByVal path As String) As Workbook
