@@ -11,7 +11,8 @@ Private Const OUTPUT_FOLDER As String = "Factures Generated"
 Private Const INVOICE_NUMBER_PREFIX As String = "LAT21"
 
 Public Sub GenererUneFacture(ByVal program As String, _
-                             ByVal lot As String, _
+                             ByVal invoiceGroup As String, _
+                             ByVal targetLots As Collection, _
                              ByVal template As Workbook)
     Dim tracking As Workbook
     Dim source As Workbook
@@ -20,6 +21,8 @@ Public Sub GenererUneFacture(ByVal program As String, _
     Dim generated As Workbook
     Dim trackingPath As String
     Dim sourcePath As String
+    Dim trackingWasOpen As Boolean
+    Dim sourceWasOpen As Boolean
     Dim outFolder As String
     Dim baseName As String
     Dim tempPath As String
@@ -31,16 +34,19 @@ Public Sub GenererUneFacture(ByVal program As String, _
 
     oldScreen = Application.ScreenUpdating
 
-    trackingPath = FindWorkbookPath(template.path, TRACKING_FILE_PATTERN, template.Name)
-    sourcePath = FindWorkbookPath(template.path, PRICE_FILE_PATTERN, template.Name)
+    trackingPath = FindWorkbookPath(template.Path, TRACKING_FILE_PATTERN, template.Name)
+    sourcePath = FindWorkbookPath(template.Path, PRICE_FILE_PATTERN, template.Name)
     If Len(trackingPath) = 0 Then
         Err.Raise vbObjectError + 2200, , _
-            "No file matching '" & TRACKING_FILE_PATTERN & "' found in: " & template.path
+            "No file matching '" & TRACKING_FILE_PATTERN & "' found in: " & template.Path
     End If
     If Len(sourcePath) = 0 Then
         Err.Raise vbObjectError + 2201, , _
-            "No file matching '" & PRICE_FILE_PATTERN & "' found in: " & template.path
+            "No file matching '" & PRICE_FILE_PATTERN & "' found in: " & template.Path
     End If
+
+    trackingWasOpen = IsWorkbookOpen(trackingPath)
+    sourceWasOpen = IsWorkbookOpen(sourcePath)
 
     Set tracking = OpenReadOnlyWorkbook(trackingPath)
     Set wsTracking = FindTrackingSheet(tracking)
@@ -54,12 +60,12 @@ Public Sub GenererUneFacture(ByVal program As String, _
                                           "' not found in " & source.Name
     End If
 
-    coisage = AskForCoisage(template)
+    coisage = AskForCoisage(template, program, invoiceGroup)
 
-    outFolder = template.path & Application.PathSeparator & OUTPUT_FOLDER
+    outFolder = template.Path & Application.PathSeparator & OUTPUT_FOLDER
     EnsureFolder outFolder
 
-    baseName = SafeFileName(program & "_" & lot)
+    baseName = SafeFileName(program & "_" & invoiceGroup)
     finalPath = outFolder & Application.PathSeparator & baseName & ".xlsx"
     tempPath = outFolder & Application.PathSeparator & "~temp_" & baseName & _
                FileExtension(template.Name)
@@ -74,15 +80,18 @@ Public Sub GenererUneFacture(ByVal program As String, _
 
     template.SaveCopyAs tempPath
     Set generated = Workbooks.Open(tempPath, UpdateLinks:=False)
-    FillGeneratedInvoice generated, wsTracking, wsSource, program, lot, coisage
+    FillGeneratedInvoice generated, wsTracking, wsSource, program, invoiceGroup, targetLots, coisage
     DeleteSheetIfExists generated, CONTROL_SHEET
 
     Application.DisplayAlerts = False
-    generated.SaveAs fileName:=finalPath, FileFormat:=xlOpenXMLWorkbook
+    generated.SaveAs Filename:=finalPath, FileFormat:=xlOpenXMLWorkbook
     Application.DisplayAlerts = True
     generated.Close SaveChanges:=False
     Set generated = Nothing
     If Len(Dir(tempPath)) > 0 Then Kill tempPath
+
+    If Not trackingWasOpen And Not tracking Is Nothing Then tracking.Close SaveChanges:=False
+    If Not sourceWasOpen And Not source Is Nothing Then source.Close SaveChanges:=False
 
     Application.ScreenUpdating = oldScreen
     Exit Sub
@@ -94,6 +103,8 @@ Fail:
     Application.DisplayAlerts = True
     If Not generated Is Nothing Then generated.Close SaveChanges:=False
     If Len(Dir(tempPath)) > 0 Then Kill tempPath
+    If Not trackingWasOpen And Not tracking Is Nothing Then tracking.Close SaveChanges:=False
+    If Not sourceWasOpen And Not source Is Nothing Then source.Close SaveChanges:=False
     Application.ScreenUpdating = oldScreen
     On Error GoTo 0
     Err.Raise errNumber, , errText
@@ -103,7 +114,8 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
                                  ByVal wsTracking As Worksheet, _
                                  ByVal wsSource As Worksheet, _
                                  ByVal program As String, _
-                                 ByVal lot As String, _
+                                 ByVal invoiceGroup As String, _
+                                 ByVal targetLots As Collection, _
                                  ByVal coisage As String)
     Dim wsInput As Worksheet
     Dim wsFinal As Worksheet
@@ -157,7 +169,7 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     ClearInvoiceData wsInput, wsFinal
 
     inputRow = 2
-    For Each item In GetMatchingRows(wsTracking, program, lot)
+    For Each item In GetMatchingRows(wsTracking, program, targetLots)
         msn = Trim$(CStr(wsTracking.Cells(CLng(item), 3).Value2))
         vu = Trim$(CStr(wsTracking.Cells(CLng(item), 4).Value2))
         code = NormalizeCode(wsTracking.Cells(CLng(item), 6).Value2)
@@ -203,7 +215,7 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     finalRow = 8
     For Each item In msnOrder
         SetCell wsInput.Cells(summaryRow, 5), _
-                BuildReference(program, lot, vusByMsn(CStr(item))), False
+                BuildReference(program, invoiceGroup, vusByMsn(CStr(item))), False
         SetCell wsInput.Cells(summaryRow, 6), CStr(item), False
         SetCell wsInput.Cells(summaryRow, 7), Abs(CDbl(totals(CStr(item)))), False
 
@@ -222,25 +234,32 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
     wsInput.Range("I:OI").ClearContents
     SetCell wsFinal.Cells(4, 3), coisage, False
     SetCell wsFinal.Cells(3, 2), _
-            "N° Facture : " & BuildInvoiceNumber(coisage, wsFinal.Cells(4, 14).value), _
+            "NÂ° Facture : " & BuildInvoiceNumber(coisage, wsFinal.Cells(4, 14).Value), _
             False
 End Sub
 
 Private Function GetMatchingRows(ByVal ws As Worksheet, _
                                  ByVal program As String, _
-                                 ByVal lot As String) As Collection
+                                 ByVal targetLots As Collection) As Collection
     Dim result As New Collection
     Dim rowNumber As Long
     Dim lastRow As Long
+    Dim normalizedLot As String
+    Dim targetLot As Variant
+    Dim isMatch As Boolean
 
     lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     For rowNumber = 2 To lastRow
-        If StrComp(Trim$(CStr(ws.Cells(rowNumber, 1).Value2)), program, _
-                   vbTextCompare) = 0 _
-           And StrComp(NormalizeInvoiceLot(program, _
-                                           CStr(ws.Cells(rowNumber, 2).Value2)), _
-                       lot, vbTextCompare) = 0 Then
-            result.Add rowNumber
+        If StrComp(Trim$(CStr(ws.Cells(rowNumber, 1).Value2)), program, vbTextCompare) = 0 Then
+            normalizedLot = NormalizeInvoiceLot(program, CStr(ws.Cells(rowNumber, 2).Value2))
+            isMatch = False
+            For Each targetLot In targetLots
+                If StrComp(normalizedLot, CStr(targetLot), vbTextCompare) = 0 Then
+                    isMatch = True
+                    Exit For
+                End If
+            Next targetLot
+            If isMatch Then result.Add rowNumber
         End If
     Next rowNumber
     Set GetMatchingRows = result
@@ -344,19 +363,21 @@ Private Function IsNumericValue(ByVal value As Variant) As Boolean
     IsNumericValue = IsNumeric(value)
 End Function
 
-Private Function AskForCoisage(ByVal template As Workbook) As String
+Private Function AskForCoisage(ByVal template As Workbook, _
+                               ByVal program As String, _
+                               ByVal invoiceGroup As String) As String
     Dim defaultValue As String
     Dim answer As String
 
     On Error Resume Next
-    defaultValue = CStr(FindSheet(template, FINAL_SHEET).Cells(4, 3).value)
+    defaultValue = CStr(FindSheet(template, FINAL_SHEET).Cells(4, 3).Value)
     On Error GoTo 0
     answer = InputBox( _
-        "Saisir le coisage / packing list de cette facture :", _
+        "Saisir le coisage / packing list pour [" & program & " - " & invoiceGroup & "] :", _
         "Informations facture", defaultValue)
     If Len(Trim$(answer)) = 0 Then
         Err.Raise vbObjectError + 2206, , _
-            "La génération est annulée : le coisage est obligatoire."
+            "La gÃ©nÃ©ration est annulÃ©e : le coisage est obligatoire."
     End If
     AskForCoisage = Trim$(answer)
 End Function
@@ -370,7 +391,7 @@ Private Function BuildInvoiceNumber(ByVal coisage As String, _
 
     If Not IsDate(shippedDate) Then
         Err.Raise vbObjectError + 2207, , _
-            "La date d'expédition en N4 est invalide."
+            "La date d'expÃ©dition en N4 est invalide."
     End If
 
     parts = Split(Trim$(coisage), "-")
@@ -382,7 +403,7 @@ Private Function BuildInvoiceNumber(ByVal coisage As String, _
     sequenceText = DigitsOnly(CStr(parts(2)))
     If Len(sequenceText) = 0 Then
         Err.Raise vbObjectError + 2209, , _
-            "Aucun numéro de séquence trouvé dans le coisage : " & coisage
+            "Aucun numÃ©ro de sÃ©quence trouvÃ© dans le coisage : " & coisage
     End If
     sequenceNumber = CLng(sequenceText)
     shippedDay = Format$(CDate(shippedDate), "dd")
@@ -491,7 +512,6 @@ Private Function FindTrackingSheet(ByVal wb As Workbook) As Worksheet
     Next ws
 End Function
 
-'Exact name first, then any sheet whose name contains the text
 Private Function FindSheet(ByVal wb As Workbook, ByVal key As String) As Worksheet
     Dim ws As Worksheet
 
@@ -509,6 +529,17 @@ Private Function FindSheet(ByVal wb As Workbook, ByVal key As String) As Workshe
     Next ws
 End Function
 
+Private Function IsWorkbookOpen(ByVal fullPath As String) As Boolean
+    Dim wb As Workbook
+
+    For Each wb In Application.Workbooks
+        If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
+            IsWorkbookOpen = True
+            Exit Function
+        End If
+    Next wb
+End Function
+
 Private Function OpenReadOnlyWorkbook(ByVal path As String) As Workbook
     Dim wb As Workbook
 
@@ -521,7 +552,6 @@ Private Function OpenReadOnlyWorkbook(ByVal path As String) As Workbook
     Set OpenReadOnlyWorkbook = Workbooks.Open(path, ReadOnly:=True, UpdateLinks:=False)
 End Function
 
-'Skips Excel lock files (~$...) and the template itself
 Private Function FindWorkbookPath(ByVal folderPath As String, _
                                   ByVal filePattern As String, _
                                   ByVal excludeName As String) As String
@@ -539,8 +569,6 @@ Private Function FindWorkbookPath(ByVal folderPath As String, _
     Loop
 End Function
 
-
-'Clears a range even when it touches merged cells
 Private Sub ClearRangeSafe(ByVal rng As Range)
     Dim target As Range
     Dim c As Range
@@ -565,7 +593,6 @@ Private Sub ClearRangeSafe(ByVal rng As Range)
     Next c
 End Sub
 
-'Writes a value or formula; inside a merged block only the top-left cell is written
 Private Sub SetCell(ByVal c As Range, ByVal v As Variant, ByVal asFormula As Boolean)
     If c.MergeCells Then
         If c.Address <> c.MergeArea.Cells(1, 1).Address Then Exit Sub
@@ -573,8 +600,6 @@ Private Sub SetCell(ByVal c As Range, ByVal v As Variant, ByVal asFormula As Boo
     If asFormula Then
         c.Formula = v
     Else
-        c.value = v
+        c.Value = v
     End If
 End Sub
-
-
