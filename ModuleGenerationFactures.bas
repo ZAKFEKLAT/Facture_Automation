@@ -221,7 +221,6 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
         End If
     Next item
 
-    ' Expand or shrink Facture finale table dynamically to match msnOrder.Count
     activeLastRow = AdjustFinalTableRows(wsFinal, templateLastRow, msnOrder.Count)
 
     summaryRow = 2
@@ -243,7 +242,6 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
         finalRow = finalRow + 1
     Next item
 
-    ' Hide any leftover unused template rows so short invoices stay clean
     If finalRow <= activeLastRow Then
         wsFinal.Rows(finalRow & ":" & activeLastRow).Hidden = True
     End If
@@ -256,7 +254,6 @@ Private Sub FillGeneratedInvoice(ByVal facture As Workbook, _
             False
 End Sub
 
-' Detects the last data row in Facture finale before the Total/Footer block
 Private Function DetectFinalTableLastRow(ByVal wsFinal As Worksheet) As Long
     Dim r As Long
     Dim maxScan As Long
@@ -274,7 +271,6 @@ Private Function DetectFinalTableLastRow(ByVal wsFinal As Worksheet) As Long
                                CStr(wsFinal.Cells(r, 11).Value2) & " " & _
                                CStr(wsFinal.Cells(r, 12).Value2)))
 
-        ' Stop right before the Total row (e.g., =SUM(...) in M, or "TOTAL" label)
         If Left$(colMFormula, 5) = "=SUM(" Or Left$(colMFormula, 7) = "=SOMME(" Or _
            InStr(1, rowText, "TOTAL", vbTextCompare) > 0 Or _
            InStr(1, colBText, "TOTAL", vbTextCompare) > 0 Then
@@ -283,7 +279,6 @@ Private Function DetectFinalTableLastRow(ByVal wsFinal As Worksheet) As Long
         End If
     Next r
 
-    ' Fallback if no explicit Total label is found
     DetectFinalTableLastRow = Application.WorksheetFunction.Max( _
         FINAL_FIRST_ROW, _
         wsFinal.Cells(wsFinal.Rows.Count, 2).End(xlUp).Row, _
@@ -291,7 +286,6 @@ Private Function DetectFinalTableLastRow(ByVal wsFinal As Worksheet) As Long
         wsFinal.Cells(wsFinal.Rows.Count, 12).End(xlUp).Row)
 End Function
 
-' Inserts formatted rows when neededCount exceeds template capacity, and updates SUM formulas below
 Private Function AdjustFinalTableRows(ByVal wsFinal As Worksheet, _
                                       ByVal templateLastRow As Long, _
                                       ByVal neededCount As Long) As Long
@@ -299,50 +293,66 @@ Private Function AdjustFinalTableRows(ByVal wsFinal As Worksheet, _
     Dim extraRows As Long
     Dim insertAt As Long
     Dim newLastRow As Long
-    Dim footerRow As Long
-    Dim col As Long
-    Dim fText As String
+    Dim lastDataRow As Long
 
     If templateLastRow < FINAL_FIRST_ROW Then templateLastRow = FINAL_FIRST_ROW
     wsFinal.Rows(FINAL_FIRST_ROW & ":" & templateLastRow).Hidden = False
 
     capacity = templateLastRow - FINAL_FIRST_ROW + 1
-    If neededCount <= capacity Then
-        AdjustFinalTableRows = templateLastRow
-        Exit Function
+    newLastRow = templateLastRow
+
+    If neededCount > capacity Then
+        extraRows = neededCount - capacity
+        insertAt = templateLastRow + 1
+        newLastRow = templateLastRow + extraRows
+
+        wsFinal.Rows(insertAt).Resize(extraRows).Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+
+        wsFinal.Rows(templateLastRow).Copy
+        wsFinal.Rows(insertAt & ":" & newLastRow).PasteSpecial Paste:=xlPasteAll
+        Application.CutCopyMode = False
+        wsFinal.Rows(insertAt & ":" & newLastRow).RowHeight = wsFinal.Rows(templateLastRow).RowHeight
+
+        ClearRangeSafe wsFinal.Range("B" & insertAt & ":B" & newLastRow)
+        ClearRangeSafe wsFinal.Range("I" & insertAt & ":J" & newLastRow)
+        ClearRangeSafe wsFinal.Range("L" & insertAt & ":M" & newLastRow)
     End If
 
-    extraRows = neededCount - capacity
-    insertAt = templateLastRow + 1
-    newLastRow = templateLastRow + extraRows
+    If neededCount > 0 Then
+        lastDataRow = FINAL_FIRST_ROW + neededCount - 1
+    Else
+        lastDataRow = FINAL_FIRST_ROW
+    End If
 
-    ' Insert rows right after the last template data row so footer shifts down intact
-    wsFinal.Rows(insertAt).Resize(extraRows).Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+    UpdateFooterSumFormulas wsFinal, newLastRow, lastDataRow
+    AdjustFinalTableRows = newLastRow
+End Function
 
-    ' Copy formatting, merged-cell layout, and row height from templateLastRow to all inserted rows
-    wsFinal.Rows(templateLastRow).Copy
-    wsFinal.Rows(insertAt & ":" & newLastRow).PasteSpecial Paste:=xlPasteFormats
-    Application.CutCopyMode = False
-    wsFinal.Rows(insertAt & ":" & newLastRow).RowHeight = wsFinal.Rows(templateLastRow).RowHeight
-    ClearRangeSafe wsFinal.Range("B" & insertAt & ":B" & newLastRow)
-    ClearRangeSafe wsFinal.Range("I" & insertAt & ":J" & newLastRow)
-    ClearRangeSafe wsFinal.Range("L" & insertAt & ":M" & newLastRow)
+Private Sub UpdateFooterSumFormulas(ByVal wsFinal As Worksheet, _
+                                    ByVal newLastRow As Long, _
+                                    ByVal lastDataRow As Long)
+    Dim footerRow As Long
+    Dim col As Long
+    Dim fText As String
+    Dim colLetter As String
 
-    ' Ensure any SUM/SOMME formulas in the footer immediately below include the newly inserted rows
-    For footerRow = newLastRow + 1 To newLastRow + 10
+    For footerRow = newLastRow + 1 To newLastRow + 15
         For col = 1 To 15
-            fText = CStr(wsFinal.Cells(footerRow, col).Formula)
-            If Left$(fText, 1) = "=" Then
-                fText = Replace(fText, ":" & "L" & templateLastRow & ")", ":" & "L" & newLastRow & ")", 1, -1, vbTextCompare)
-                fText = Replace(fText, ":" & "M" & templateLastRow & ")", ":" & "M" & newLastRow & ")", 1, -1, vbTextCompare)
-                fText = Replace(fText, ":$L$" & templateLastRow & ")", ":$L$" & newLastRow & ")", 1, -1, vbTextCompare)
-                fText = Replace(fText, ":$M$" & templateLastRow & ")", ":$M$" & newLastRow & ")", 1, -1, vbTextCompare)
-                wsFinal.Cells(footerRow, col).Formula = fText
+            fText = Trim$(CStr(wsFinal.Cells(footerRow, col).Formula))
+            If UCase$(Left$(fText, 5)) = "=SUM(" Or UCase$(Left$(fText, 7)) = "=SOMME(" Then
+                colLetter = ColumnIndexToLetter(col)
+                If col = 14 Then colLetter = "M"
+                wsFinal.Cells(footerRow, col).Formula = _
+                    "=SUM(" & colLetter & FINAL_FIRST_ROW & ":" & colLetter & lastDataRow & ")"
             End If
         Next col
     Next footerRow
+End Sub
 
-    AdjustFinalTableRows = newLastRow
+Private Function ColumnIndexToLetter(ByVal colIndex As Long) As String
+    Dim parts As Variant
+    parts = Split(Cells(1, colIndex).Address(True, False), "$")
+    ColumnIndexToLetter = parts(0)
 End Function
 
 Private Function GetMatchingRows(ByVal ws As Worksheet, _
